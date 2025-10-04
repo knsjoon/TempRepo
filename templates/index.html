@@ -2,24 +2,43 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>UR10e — Joints + FK Visuals</title>
+  <title>UR10e — Live FK (Python → Babylon)</title>
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
   <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
   <style>
-    html,body{width:100%;height:100%;margin:0;overflow:hidden}
-    #renderCanvas{width:100%;height:100%;touch-action:none}
+    html,body { width:100%; height:100%; margin:0; overflow:hidden; background:#0f1117; }
+    #renderCanvas { width:100%; height:100%; touch-action:none; }
+    #hud {
+      position: absolute; top: 8px; left: 8px;
+      padding: 8px 10px; background: rgba(0,0,0,0.45); color: #eaeaea;
+      font: 12px/1.3 system-ui, -apple-system, Segoe UI, Roboto, Inter, Arial, sans-serif;
+      border-radius: 8px;
+    }
+    #hud code { color:#a7c7ff; }
   </style>
 </head>
 <body>
   <canvas id="renderCanvas"></canvas>
+  <div id="hud">
+    <div><b>UR10e Live Viewer</b></div>
+    <div>Polling: <code>/api/visuals_live</code>, <code>/api/joints_live</code></div>
+    <div>Axes = 0.3 m, RH system</div>
+  </div>
   <script>
     const canvas = document.getElementById("renderCanvas");
     const engine = new BABYLON.Engine(canvas, true);
 
-    // Forward any query params (like ?shoulder_pan_joint=1.0) to both APIs
-    const JOINT_PARAMS = location.search || "";
+    // If your OBJs are in millimeters, set this to 0.001. Otherwise keep 1.0.
+    const MESH_UNIT_SCALE = 1.0;
 
-    async function getJSON(url){ const r = await fetch(url); if(!r.ok) throw new Error(url+" -> "+r.status); return r.json(); }
+    // Polling rate (ms)
+    const POLL_MS = 10; // 10 Hz
+
+    async function jget(url) {
+      const r = await fetch(url, { cache: "no-store" });
+      if (!r.ok) throw new Error(url + " -> " + r.status);
+      return r.json();
+    }
 
     function fitCameraToMeshes(scene, camera, meshes) {
       if (!meshes.length) return;
@@ -31,75 +50,138 @@
         max = BABYLON.Vector3.Maximize(max, bb.maximumWorld);
       }
       const center = min.add(max).scale(0.5);
-      const size = max.subtract(min);
+      const size   = max.subtract(min);
       const radius = Math.max(size.x, size.y, size.z) * 1.25;
       camera.setTarget(center);
       camera.radius = Math.max(radius, 0.5);
     }
 
-    (async function(){
+    (async function main(){
       const scene = new BABYLON.Scene(engine);
-      scene.clearColor = new BABYLON.Color3(0.1,0.1,0.15);
+      scene.clearColor = new BABYLON.Color4(0.08, 0.09, 0.12, 1.0);
       scene.useRightHandedSystem = true;
 
-      const camera = new BABYLON.ArcRotateCamera("cam", Math.PI/2, Math.PI/3, 2.5, BABYLON.Vector3.Zero(), scene);
+      const camera = new BABYLON.ArcRotateCamera("cam",
+        Math.PI/2, Math.PI/3, 2.5, BABYLON.Vector3.Zero(), scene);
       camera.attachControl(canvas, true);
-      new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0,1,0), scene);
+
+      const light = new BABYLON.HemisphericLight("light",
+        new BABYLON.Vector3(0, 1, 0), scene);
+      light.intensity = 1.0;
 
       new BABYLON.AxesViewer(scene, 0.3);
 
-      const drawn = [];
+      // --- Initial import: load OBJs once and parent to a TransformNode per link ---
+      const init = await jget("/api/visuals_live");
+      const baseUrl = init.baseUrl;
+      const linkNodes = {};   // { linkName: TransformNode }
+      const importedMeshes = [];
 
-      // 1) Draw joints + skeleton
-      const jointsData = await getJSON("/api/joints" + JOINT_PARAMS);
-      jointsData.joints.forEach(j=>{
-        const s = BABYLON.MeshBuilder.CreateSphere("joint_"+j.name,{diameter:0.03},scene);
-        s.position = new BABYLON.Vector3(...j.position);
-        drawn.push(s);
-      });
-      jointsData.edges.forEach(e=>{
-        const line = BABYLON.MeshBuilder.CreateLines("edge_"+e.from+"_"+e.to,{points:[
-          new BABYLON.Vector3(...e.p1),
-          new BABYLON.Vector3(...e.p2)
-        ]},scene);
-        line.color = new BABYLON.Color3(1,1,0);
-        drawn.push(line);
-      });
-
-      // 2) Load OBJs at FK poses (position + quaternion)
-      const { baseUrl, visuals } = await getJSON("/api/visuals" + JOINT_PARAMS);
-      const loadedMeshes = [];
-      for (const v of visuals) {
+      for (const v of init.visuals) {
+        if (!linkNodes[v.link]) {
+          const n = new BABYLON.TransformNode("node_" + v.link, scene);
+          n.scaling = new BABYLON.Vector3(MESH_UNIT_SCALE, MESH_UNIT_SCALE, MESH_UNIT_SCALE);
+          linkNodes[v.link] = n;
+        }
         await new Promise(resolve => {
           BABYLON.SceneLoader.ImportMesh("", baseUrl, v.mesh, scene,
             meshes => {
               meshes.forEach(m => {
-                m.position = new BABYLON.Vector3(v.position[0], v.position[1], v.position[2]);
-                m.rotationQuaternion = new BABYLON.Quaternion(
-                  v.quaternion[0], v.quaternion[1], v.quaternion[2], v.quaternion[3]
-                );
-                m.scaling = new BABYLON.Vector3(v.scale, v.scale, v.scale);
-
-                // Simple gray if no material
+                m.parent = linkNodes[v.link];
                 if (!m.material) {
-                  const mat = new BABYLON.StandardMaterial("mat_"+v.link, scene);
-                  mat.diffuseColor = new BABYLON.Color3(0.75, 0.75, 0.75);
+                  const mat = new BABYLON.StandardMaterial("mat_" + v.link, scene);
+                  mat.diffuseColor = new BABYLON.Color3(0.78, 0.78, 0.78);
                   m.material = mat;
                 }
-                loadedMeshes.push(m);
+                importedMeshes.push(m);
               });
               resolve();
             },
             null,
-            (_s, msg)=>{ console.error("OBJ load error", v.mesh, msg); resolve(); }
+            (_s, msg) => { console.error("OBJ load error:", v.mesh, msg); resolve(); }
           );
         });
       }
 
-      fitCameraToMeshes(scene, camera, [...drawn, ...loadedMeshes]);
+      // Apply initial transforms
+      init.visuals.forEach(v => {
+        const n = linkNodes[v.link];
+        // position/quaternion are world-space poses for the link visual
+        n.position = new BABYLON.Vector3(v.position[0], v.position[1], v.position[2]);
+        n.rotationQuaternion = new BABYLON.Quaternion(
+          v.quaternion[0], v.quaternion[1], v.quaternion[2], v.quaternion[3]
+        );
+      });
 
-      engine.runRenderLoop(()=>scene.render());
-      window.addEventListener("resize", ()=>engine.resize());
+      // --- Joints (spheres) + edges (lines) ---
+      const jointSpheres = {}; // name -> mesh
+      let edgeLines = [];      // list of line meshes
+
+      const jd0 = await jget("/api/joints_live");
+      jd0.joints.forEach(j => {
+        const s = BABYLON.MeshBuilder.CreateSphere("joint_" + j.name, { diameter: 0.03 }, scene);
+        s.position = new BABYLON.Vector3(j.position[0], j.position[1], j.position[2]);
+        const mat = new BABYLON.StandardMaterial("mat_joint_" + j.name, scene);
+        mat.diffuseColor = new BABYLON.Color3(0.95, 0.35, 0.35);
+        s.material = mat;
+        jointSpheres[j.name] = s;
+      });
+      jd0.edges.forEach(e => {
+        const line = BABYLON.MeshBuilder.CreateLines(
+          "edge_" + e.from + "_" + e.to,
+          { points: [ new BABYLON.Vector3(...e.p1), new BABYLON.Vector3(...e.p2) ] },
+          scene
+        );
+        line.color = new BABYLON.Color3(1, 1, 0);
+        edgeLines.push(line);
+      });
+
+      // Frame camera to imported geometry
+      fitCameraToMeshes(scene, camera, importedMeshes);
+
+      // --- Live polling: update transforms without re-import ---
+      async function refresh() {
+        try {
+          // Update visuals (link node transforms)
+          const vd = await jget("/api/visuals_live");
+          vd.visuals.forEach(v => {
+            const n = linkNodes[v.link];
+            if (!n) return;
+            n.position.set(v.position[0], v.position[1], v.position[2]);
+            if (!n.rotationQuaternion) n.rotationQuaternion = new BABYLON.Quaternion();
+            n.rotationQuaternion.set(v.quaternion[0], v.quaternion[1], v.quaternion[2], v.quaternion[3]);
+            // scaling stays constant; we apply unit scale once via node.scaling
+          });
+
+          // Update joint spheres and edge lines
+          const jd = await jget("/api/joints_live");
+          jd.joints.forEach(j => {
+            const s = jointSpheres[j.name];
+            if (s) s.position.set(j.position[0], j.position[1], j.position[2]);
+          });
+
+          // Rebuild edges (simple & robust; if you want no flicker, cache/update instead)
+          edgeLines.forEach(l => l.dispose());
+          edgeLines = [];
+          jd.edges.forEach(e => {
+            const line = BABYLON.MeshBuilder.CreateLines(
+              "edge_" + e.from + "_" + e.to,
+              { points: [ new BABYLON.Vector3(...e.p1), new BABYLON.Vector3(...e.p2) ] },
+              scene
+            );
+            line.color = new BABYLON.Color3(1, 1, 0);
+            edgeLines.push(line);
+          });
+        } catch (err) {
+          console.error(err);
+        }
+      }
+
+      setInterval(refresh, POLL_MS);
+
+      // Render
+      engine.runRenderLoop(() => scene.render());
+      window.addEventListener("resize", () => engine.resize());
     })();
   </script>
 </body>
