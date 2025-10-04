@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>UR10e — Joints + Local OBJs</title>
+  <title>UR10e — Joints + FK Visuals</title>
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
   <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
   <style>
@@ -16,13 +16,10 @@
     const canvas = document.getElementById("renderCanvas");
     const engine = new BABYLON.Engine(canvas, true);
 
-    async function fetchJoints(){ const r = await fetch("/api/joints"); return r.json(); }
+    // Forward any query params (like ?shoulder_pan_joint=1.0) to both APIs
+    const JOINT_PARAMS = location.search || "";
 
-    // <<< change this path / filenames to match your static folder >>>
-    const ROOT = "/static/meshes/ur10e/visual/";
-    const MESH_FILES = [
-      "base.obj","shoulder.obj","upperarm.obj","forearm.obj","wrist1.obj","wrist2.obj","wrist3.obj"
-    ];
+    async function getJSON(url){ const r = await fetch(url); if(!r.ok) throw new Error(url+" -> "+r.status); return r.json(); }
 
     function fitCameraToMeshes(scene, camera, meshes) {
       if (!meshes.length) return;
@@ -48,43 +45,45 @@
       const camera = new BABYLON.ArcRotateCamera("cam", Math.PI/2, Math.PI/3, 2.5, BABYLON.Vector3.Zero(), scene);
       camera.attachControl(canvas, true);
       new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0,1,0), scene);
+
       new BABYLON.AxesViewer(scene, 0.3);
 
       const drawn = [];
 
-      // ---- draw JOINTS (your original logic) ----
-      const data = await fetchJoints();
-
-      data.joints.forEach(j=>{
+      // 1) Draw joints + skeleton
+      const jointsData = await getJSON("/api/joints" + JOINT_PARAMS);
+      jointsData.joints.forEach(j=>{
         const s = BABYLON.MeshBuilder.CreateSphere("joint_"+j.name,{diameter:0.03},scene);
-        s.position = new BABYLON.Vector3(j.position[0], j.position[1], j.position[2]);
+        s.position = new BABYLON.Vector3(...j.position);
         drawn.push(s);
       });
-
-      data.edges.forEach(e=>{
-        const p1 = new BABYLON.Vector3(...e.p1);
-        const p2 = new BABYLON.Vector3(...e.p2);
-        const line = BABYLON.MeshBuilder.CreateLines("edge_"+e.from+"_"+e.to,{points:[p1,p2]},scene);
+      jointsData.edges.forEach(e=>{
+        const line = BABYLON.MeshBuilder.CreateLines("edge_"+e.from+"_"+e.to,{points:[
+          new BABYLON.Vector3(...e.p1),
+          new BABYLON.Vector3(...e.p2)
+        ]},scene);
         line.color = new BABYLON.Color3(1,1,0);
         drawn.push(line);
       });
 
-      // ---- load LOCAL OBJs (added; does NOT replace joints) ----
+      // 2) Load OBJs at FK poses (position + quaternion)
+      const { baseUrl, visuals } = await getJSON("/api/visuals" + JOINT_PARAMS);
       const loadedMeshes = [];
-      for (const file of MESH_FILES) {
+      for (const v of visuals) {
         await new Promise(resolve => {
-          BABYLON.SceneLoader.ImportMesh("", ROOT, file, scene,
+          BABYLON.SceneLoader.ImportMesh("", baseUrl, v.mesh, scene,
             meshes => {
               meshes.forEach(m => {
-                // If OBJs are in millimeters, uncomment next line:
-                // m.scaling = new BABYLON.Vector3(0.001,0.001,0.001);
+                m.position = new BABYLON.Vector3(v.position[0], v.position[1], v.position[2]);
+                m.rotationQuaternion = new BABYLON.Quaternion(
+                  v.quaternion[0], v.quaternion[1], v.quaternion[2], v.quaternion[3]
+                );
+                m.scaling = new BABYLON.Vector3(v.scale, v.scale, v.scale);
 
-                // For now, place at origin (no FK placement in this local-only mode)
-                m.position = BABYLON.Vector3.Zero();
-
+                // Simple gray if no material
                 if (!m.material) {
-                  const mat = new BABYLON.StandardMaterial("mat_"+file, scene);
-                  mat.diffuseColor = new BABYLON.Color3(0.75,0.75,0.75);
+                  const mat = new BABYLON.StandardMaterial("mat_"+v.link, scene);
+                  mat.diffuseColor = new BABYLON.Color3(0.75, 0.75, 0.75);
                   m.material = mat;
                 }
                 loadedMeshes.push(m);
@@ -92,16 +91,15 @@
               resolve();
             },
             null,
-            (_scene, msg) => { console.error("OBJ load error", file, msg); resolve(); }
+            (_s, msg)=>{ console.error("OBJ load error", v.mesh, msg); resolve(); }
           );
         });
       }
 
-      // Frame joints + OBJs together
       fitCameraToMeshes(scene, camera, [...drawn, ...loadedMeshes]);
 
       engine.runRenderLoop(()=>scene.render());
-      window.addEventListener("resize",()=>engine.resize());
+      window.addEventListener("resize", ()=>engine.resize());
     })();
   </script>
 </body>
