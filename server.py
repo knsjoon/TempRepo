@@ -62,7 +62,7 @@ class URDFVisualizer:
 # ---------------- Flask setup ----------------
 app = Flask(__name__, template_folder="templates")
 
-URDF_PATH = "/home/seokjoonkim/Desktop/code/ur10e_bundle/ur10e.urdf"
+URDF_PATH = "/home/seokjoonkim/Desktop/programming/ur10e_bundle/ur10e.urdf"
 visualizer = URDFVisualizer(URDF_PATH)
 
 @app.route("/")

@@ -2,9 +2,13 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>UR10e Joints</title>
+  <title>UR10e — Joints + Local OBJs</title>
   <script src="https://cdn.babylonjs.com/babylon.js"></script>
-  <style>html,body{width:100%;height:100%;margin:0;overflow:hidden}#renderCanvas{width:100%;height:100%;touch-action:none}</style>
+  <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+  <style>
+    html,body{width:100%;height:100%;margin:0;overflow:hidden}
+    #renderCanvas{width:100%;height:100%;touch-action:none}
+  </style>
 </head>
 <body>
   <canvas id="renderCanvas"></canvas>
@@ -14,6 +18,28 @@
 
     async function fetchJoints(){ const r = await fetch("/api/joints"); return r.json(); }
 
+    // <<< change this path / filenames to match your static folder >>>
+    const ROOT = "/static/meshes/ur10e/visual/";
+    const MESH_FILES = [
+      "base.obj","shoulder.obj","upperarm.obj","forearm.obj","wrist1.obj","wrist2.obj","wrist3.obj"
+    ];
+
+    function fitCameraToMeshes(scene, camera, meshes) {
+      if (!meshes.length) return;
+      let min = meshes[0].getBoundingInfo().boundingBox.minimumWorld.clone();
+      let max = meshes[0].getBoundingInfo().boundingBox.maximumWorld.clone();
+      for (let i = 1; i < meshes.length; i++) {
+        const bb = meshes[i].getBoundingInfo().boundingBox;
+        min = BABYLON.Vector3.Minimize(min, bb.minimumWorld);
+        max = BABYLON.Vector3.Maximize(max, bb.maximumWorld);
+      }
+      const center = min.add(max).scale(0.5);
+      const size = max.subtract(min);
+      const radius = Math.max(size.x, size.y, size.z) * 1.25;
+      camera.setTarget(center);
+      camera.radius = Math.max(radius, 0.5);
+    }
+
     (async function(){
       const scene = new BABYLON.Scene(engine);
       scene.clearColor = new BABYLON.Color3(0.1,0.1,0.15);
@@ -22,25 +48,57 @@
       const camera = new BABYLON.ArcRotateCamera("cam", Math.PI/2, Math.PI/3, 2.5, BABYLON.Vector3.Zero(), scene);
       camera.attachControl(canvas, true);
       new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0,1,0), scene);
-
-      // ✅ simplest axes at origin
       new BABYLON.AxesViewer(scene, 0.3);
 
+      const drawn = [];
+
+      // ---- draw JOINTS (your original logic) ----
       const data = await fetchJoints();
 
-      // joints
       data.joints.forEach(j=>{
-        const s = BABYLON.MeshBuilder.CreateSphere(j.name,{diameter:0.03},scene);
+        const s = BABYLON.MeshBuilder.CreateSphere("joint_"+j.name,{diameter:0.03},scene);
         s.position = new BABYLON.Vector3(j.position[0], j.position[1], j.position[2]);
+        drawn.push(s);
       });
 
-      // edges
       data.edges.forEach(e=>{
         const p1 = new BABYLON.Vector3(...e.p1);
         const p2 = new BABYLON.Vector3(...e.p2);
         const line = BABYLON.MeshBuilder.CreateLines("edge_"+e.from+"_"+e.to,{points:[p1,p2]},scene);
         line.color = new BABYLON.Color3(1,1,0);
+        drawn.push(line);
       });
+
+      // ---- load LOCAL OBJs (added; does NOT replace joints) ----
+      const loadedMeshes = [];
+      for (const file of MESH_FILES) {
+        await new Promise(resolve => {
+          BABYLON.SceneLoader.ImportMesh("", ROOT, file, scene,
+            meshes => {
+              meshes.forEach(m => {
+                // If OBJs are in millimeters, uncomment next line:
+                // m.scaling = new BABYLON.Vector3(0.001,0.001,0.001);
+
+                // For now, place at origin (no FK placement in this local-only mode)
+                m.position = BABYLON.Vector3.Zero();
+
+                if (!m.material) {
+                  const mat = new BABYLON.StandardMaterial("mat_"+file, scene);
+                  mat.diffuseColor = new BABYLON.Color3(0.75,0.75,0.75);
+                  m.material = mat;
+                }
+                loadedMeshes.push(m);
+              });
+              resolve();
+            },
+            null,
+            (_scene, msg) => { console.error("OBJ load error", file, msg); resolve(); }
+          );
+        });
+      }
+
+      // Frame joints + OBJs together
+      fitCameraToMeshes(scene, camera, [...drawn, ...loadedMeshes]);
 
       engine.runRenderLoop(()=>scene.render());
       window.addEventListener("resize",()=>engine.resize());
