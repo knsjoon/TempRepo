@@ -27,7 +27,7 @@ class URDFVisualizer:
         # default: all zeros
         if joint_cfg is None:
             joint_cfg = {j.name: 0.0 for j in self.robot.joints}
-
+        
         fk = self.fk_by_name(joint_cfg)
         joints, edges = [], []
 
@@ -38,7 +38,7 @@ class URDFVisualizer:
             if child_name not in fk:
                 continue
 
-            child_pos = fk[child_name][:3, 3].tolist()
+            child_pos = fk[child_name][:3, 3].tolist() # joint position = child link origin in world
             joints.append({"name": j.name, "parent": parent_name, "child": child_name, "position": child_pos})
 
             if parent_name in fk:
@@ -95,7 +95,16 @@ class URDFVisualizer:
         """For each link.visual: world_T = FK(link) @ visual.origin."""
         if joint_cfg is None:
             joint_cfg = {j.name: 0.0 for j in self.robot.joints}
-
+    
+        # first_joint_name = self.robot.joints[2].name
+        # joint_cfg[first_joint_name] = np.deg2rad(30.0)
+        # print (first_joint_name)
+        # first_joint_name = self.robot.joints[3].name
+        # joint_cfg[first_joint_name] = np.deg2rad(30.0)
+        # print (first_joint_name)
+        # first_joint_name = self.robot.joints[4].name
+        # joint_cfg[first_joint_name] = np.deg2rad(30.0)
+        # print (first_joint_name)
         fk = self.fk_by_name(joint_cfg)  # {link_name: 4x4}
         visuals = []
 
@@ -110,7 +119,7 @@ class URDFVisualizer:
             for vis in link.visuals:
                 if not vis.geometry or not vis.geometry.mesh or not vis.geometry.mesh.filename:
                     continue
-
+                
                 V = vis.origin if vis.origin is not None else np.eye(4)
                 world_T = link_T @ V
                 pos = world_T[:3, 3]
@@ -143,6 +152,7 @@ def index():
 def api_joints():
     # Optional joint angles via query params
     cfg = {}
+   
     for j in visualizer.robot.joints:
         if j.name in request.args:
             try:
