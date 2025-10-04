@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>UR10e Joints</title>
+  <script src="https://cdn.babylonjs.com/babylon.js"></script>
+  <style>html,body{width:100%;height:100%;margin:0;overflow:hidden}#renderCanvas{width:100%;height:100%;touch-action:none}</style>
+</head>
+<body>
+  <canvas id="renderCanvas"></canvas>
+  <script>
+    const canvas = document.getElementById("renderCanvas");
+    const engine = new BABYLON.Engine(canvas, true);
+
+    async function fetchJoints(){ const r = await fetch("/api/joints"); return r.json(); }
+
+    (async function(){
+      const scene = new BABYLON.Scene(engine);
+      scene.clearColor = new BABYLON.Color3(0.1,0.1,0.15);
+      scene.useRightHandedSystem = true;
+
+      const camera = new BABYLON.ArcRotateCamera("cam", Math.PI/2, Math.PI/3, 2.5, BABYLON.Vector3.Zero(), scene);
+      camera.attachControl(canvas, true);
+      new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0,1,0), scene);
+
+      // ✅ simplest axes at origin
+      new BABYLON.AxesViewer(scene, 0.3);
+
+      const data = await fetchJoints();
+
+      // joints
+      data.joints.forEach(j=>{
+        const s = BABYLON.MeshBuilder.CreateSphere(j.name,{diameter:0.03},scene);
+        s.position = new BABYLON.Vector3(j.position[0], j.position[1], j.position[2]);
+      });
+
+      // edges
+      data.edges.forEach(e=>{
+        const p1 = new BABYLON.Vector3(...e.p1);
+        const p2 = new BABYLON.Vector3(...e.p2);
+        const line = BABYLON.MeshBuilder.CreateLines("edge_"+e.from+"_"+e.to,{points:[p1,p2]},scene);
+        line.color = new BABYLON.Color3(1,1,0);
+      });
+
+      engine.runRenderLoop(()=>scene.render());
+      window.addEventListener("resize",()=>engine.resize());
+    })();
+  </script>
+</body>
+</html>
